@@ -133,6 +133,9 @@ public:
     }
 
     ResourceRecord getRecord(const std::string &name) {
+        if (records.find(name) == records.end()) {
+            return ResourceRecord(name, 1, 1, 1, 4, "0.0.0.0");
+        }
         return records[name];
     }
 };
