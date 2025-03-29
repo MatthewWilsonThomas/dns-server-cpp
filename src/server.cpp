@@ -169,7 +169,8 @@ int main() {
         // Parse incoming DNS message
         DNSMessage incomingMsg = DNSMessage::deserialize(buffer);
         incomingMsg.debug_print();
-        
+     
+        incomingMsg.QR = true;
         char* response = incomingMsg.serialize();
         
         // Send response (12 bytes for DNS header)
