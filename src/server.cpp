@@ -25,7 +25,14 @@ struct ResourceRecord
 
     int size() const 
     {
-        return name.length() + 2 + 2 + 4 + 4 + 2 + rdata.length();
+        int nameSize = name.length() + 2; // +2 for label length bytes and null terminator
+        for (char c : name)
+        {
+            if (c == '.')
+                nameSize++; // Each dot becomes a label length byte
+        }
+        // 2 bytes for type, 2 bytes for class, 4 bytes for ttl, 2 bytes for rdlength
+        return nameSize + 2 + 2 + 4 + 2 + rdlength;
     }
     
     // Serialize resource record into the buffer at given offset
@@ -117,6 +124,10 @@ class DNSStore {
     std::unordered_map<std::string, ResourceRecord> records;
 
 public:
+    DNSStore() {
+        addRecord("codecrafters.io", ResourceRecord("codecrafters.io", 1, 1, 1, 4, "8.8.8.8"));
+    }
+
     void addRecord(const std::string &name, const ResourceRecord &record) {
         records[name] = record;
     }
@@ -125,11 +136,7 @@ public:
         return records[name];
     }
 };
-
 DNSStore dns_store;
-void init_dns_store() {
-    dns_store.addRecord("codecrafters.io", ResourceRecord("codecrafters.io", 1, 1, 1, 4, "8.8.8.8"));
-}
 
 struct Question
 {
@@ -454,9 +461,6 @@ int main()
     int bytesRead;
     char buffer[1024];
     socklen_t clientAddrLen = sizeof(clientAddress);
-
-    // Create DNS records
-    init_dns_store();
 
     while (true)
     {
