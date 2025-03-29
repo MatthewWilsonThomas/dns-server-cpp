@@ -6,12 +6,240 @@
 
 #include <vector>
 #include <string>
+#include <unordered_map> 
 
 #define DEBUG_OUTPUT 0
 
 #define DEBUG(x)      \
     if (DEBUG_OUTPUT) \
         std::cout << x << std::endl;
+
+struct ResourceRecord
+{
+    std::string name;
+    uint16_t rtype;
+    uint16_t rclass;
+    uint32_t ttl;
+    uint16_t rdlength;
+    std::string rdata;
+
+    int size() const 
+    {
+        return name.length() + 2 + 2 + 4 + 4 + 2 + rdlength;
+    }
+    
+    // Serialize resource record into the buffer at given offset
+    int serialize(char* buffer, int offset) const 
+    {
+        // Write domain name in DNS format (length byte followed by characters)
+        std::string name_copy = name;
+        size_t pos = 0;
+        size_t next;
+
+        // Process each label (part between dots)
+        while ((next = name_copy.find('.', pos)) != std::string::npos)
+        {
+            int labelLength = next - pos;
+            buffer[offset++] = labelLength; // Label length
+
+            // Copy the label characters
+            for (int i = 0; i < labelLength; i++)
+            {
+                buffer[offset++] = name_copy[pos + i];
+            }
+
+            pos = next + 1; // Skip the dot
+        }
+
+        // Handle the last label (after the last dot or the entire name if no dots)
+        int labelLength = name_copy.length() - pos;
+        if (labelLength > 0)
+        {
+            buffer[offset++] = labelLength; // Label length
+
+            // Copy the label characters
+            for (int i = 0; i < labelLength; i++)
+            {
+                buffer[offset++] = name_copy[pos + i];
+            }
+        }
+
+        // Add null byte to terminate the domain name
+        buffer[offset++] = 0;
+
+        // Write TYPE (2 bytes)
+        buffer[offset++] = (rtype >> 8) & 0xFF;
+        buffer[offset++] = rtype & 0xFF;
+
+        // Write CLASS (2 bytes)
+        buffer[offset++] = (rclass >> 8) & 0xFF;
+        buffer[offset++] = rclass & 0xFF;
+
+        // Write TTL (4 bytes)
+        buffer[offset++] = (ttl >> 24) & 0xFF;
+        buffer[offset++] = (ttl >> 16) & 0xFF;
+        buffer[offset++] = (ttl >> 8) & 0xFF;
+        buffer[offset++] = ttl & 0xFF;
+
+        // Write RDLENGTH (2 bytes)
+        buffer[offset++] = (rdlength >> 8) & 0xFF;
+        buffer[offset++] = rdlength & 0xFF;
+
+        // Write RDATA
+        // For A records (IPv4 addresses), convert string representation to binary
+       
+        // Parse IP address string (e.g., "8.8.8.8") into 4 bytes
+        int ipParts[4] = {0};
+        int ipPartIndex = 0;
+        for (char c : rdata)
+        {
+            if (c == '.')
+            {
+                ipPartIndex++;
+            }
+            else
+            {
+                ipParts[ipPartIndex] = ipParts[ipPartIndex] * 10 + (c - '0');
+            }
+        }
+
+        // Write the 4 bytes of the IP address
+        for (int i = 0; i < 4; i++)
+        {
+            buffer[offset++] = ipParts[i] & 0xFF;
+        }
+
+        return offset;
+    }
+};
+
+class DNSStore {
+    std::unordered_map<std::string, ResourceRecord> records;
+
+public:
+    void addRecord(const std::string &name, const ResourceRecord &record) {
+        records[name] = record;
+    }
+
+    ResourceRecord getRecord(const std::string &name) {
+        return records[name];
+    }
+};
+
+DNSStore dns_store;
+void init_dns_store() {
+    dns_store.addRecord("codecrafters.io", ResourceRecord("codecrafters.io", 1, 1, 1, 4, "8.8.8.8"));
+}
+
+struct Question
+{
+    std::string name;
+    uint16_t qtype;
+    uint16_t qclass;
+
+    int serialize(char *buffer, int offset) const
+    {
+        // Write domain name in DNS format (length byte followed by characters)
+        std::string name_copy = name;
+        size_t pos = 0;
+        size_t next;
+
+        // Process each label (part between dots)
+        while ((next = name_copy.find('.', pos)) != std::string::npos)
+        {
+            int labelLength = next - pos;
+            buffer[offset++] = labelLength; // Label length
+
+            // Copy the label characters
+            for (int i = 0; i < labelLength; i++)
+            {
+                buffer[offset++] = name_copy[pos + i];
+            }
+
+            pos = next + 1; // Skip the dot
+        }
+
+        // Handle the last label (after the last dot or the entire name if no dots)
+        int labelLength = name_copy.length() - pos;
+        if (labelLength > 0)
+        {
+            buffer[offset++] = labelLength; // Label length
+
+            // Copy the label characters
+            for (int i = 0; i < labelLength; i++)
+            {
+                buffer[offset++] = name_copy[pos + i];
+            }
+        }
+
+        // Add null byte to terminate the domain name
+        buffer[offset++] = 0;
+
+        // Write QTYPE (2 bytes)
+        buffer[offset++] = (qtype >> 8) & 0xFF;
+        buffer[offset++] = qtype & 0xFF;
+
+        // Write QCLASS (2 bytes)
+        buffer[offset++] = (qclass >> 8) & 0xFF;
+        buffer[offset++] = qclass & 0xFF;
+
+        return offset;
+    }
+
+    // Deserialize a question from a buffer, offset is updated in place
+    static Question deserialize(const char *buffer, int &offset)
+    {
+        Question q;
+
+        // Parse domain name
+        std::string name;
+
+        while (true)
+        {
+            uint8_t labelLength = (uint8_t)buffer[offset++];
+
+            // If length is 0, we've reached the end of the domain name
+            if (labelLength == 0)
+                break;
+
+            // Add dot between labels (except for the first one)
+            if (!name.empty())
+                name += ".";
+
+            // Copy the characters for this label
+            for (int j = 0; j < labelLength; j++)
+            {
+                name += buffer[offset++];
+            }
+        }
+
+        q.name = name;
+
+        // Parse QTYPE (2 bytes)
+        q.qtype = ((uint8_t)buffer[offset] << 8) | (uint8_t)buffer[offset + 1];
+        offset += 2;
+
+        // Parse QCLASS (2 bytes)
+        q.qclass = ((uint8_t)buffer[offset] << 8) | (uint8_t)buffer[offset + 1];
+        offset += 2;
+
+        return q;
+    }
+
+    int size() const
+    {
+        // Domain name: length of labels + 1 byte per label length + 1 byte for null terminator
+        int nameSize = name.length() + 2; // +2 for label length bytes and null terminator
+        for (char c : name)
+        {
+            if (c == '.')
+                nameSize++; // Each dot becomes a label length byte
+        }
+        // Add 4 bytes for QTYPE (2) and QCLASS (2)
+        return nameSize + 4;
+    }
+};
+
 
 class DNSMessage
 {
@@ -32,30 +260,28 @@ public:
     uint16_t NSCOUNT;
     uint16_t ARCOUNT;
 
-    struct Question {
-        std::string name;
-        uint16_t qtype;
-        uint16_t qclass;
-    };
-
     std::vector<Question> questions;
+    std::vector<ResourceRecord> answers;
 
-    int responseSize() {
+    int size()
+    {
         // Calculate buffer size: 12 bytes for header + space for questions
         int bufferSize = 12;
-        for (const auto &question : questions) {
-            // Domain name: 1 byte per label length + label characters + 1 byte for null terminator
-            bufferSize += question.name.length() + 2; // +2 for the length bytes and terminator
-            // Add 4 bytes for QTYPE (2) and QCLASS (2)
-            bufferSize += 4;
+        for (const auto &question : questions)
+        {
+            bufferSize += question.size();
         }
-        
+        for (const auto &answer : answers)
+        {
+            bufferSize += answer.size();
+        }
+
         return bufferSize;
     }
 
     char *serialize()
     {
-        int bufferSize = responseSize();
+        int bufferSize = this->size();
         char *buffer = new char[bufferSize];
         memset(buffer, 0, bufferSize);
 
@@ -87,89 +313,16 @@ public:
 
         // Write questions
         int offset = 12;
-        for (const auto &question : questions) {
-            // Write domain name in DNS format (length byte followed by characters)
-            std::string name = question.name;
-            size_t pos = 0;
-            size_t next;
-            
-            // Process each label (part between dots)
-            while ((next = name.find('.', pos)) != std::string::npos) {
-                int labelLength = next - pos;
-                buffer[offset++] = labelLength; // Label length
-                
-                // Copy the label characters
-                for (int i = 0; i < labelLength; i++) {
-                    buffer[offset++] = name[pos + i];
-                }
-                
-                pos = next + 1; // Skip the dot
-            }
-            
-            // Handle the last label (after the last dot or the entire name if no dots)
-            int labelLength = name.length() - pos;
-            if (labelLength > 0) {
-                buffer[offset++] = labelLength; // Label length
-                
-                // Copy the label characters
-                for (int i = 0; i < labelLength; i++) {
-                    buffer[offset++] = name[pos + i];
-                }
-            }
-            
-            // Add null byte to terminate the domain name
-            buffer[offset++] = 0;
-            
-            // Write QTYPE (2 bytes)
-            buffer[offset++] = (question.qtype >> 8) & 0xFF;
-            buffer[offset++] = question.qtype & 0xFF;
-            
-            // Write QCLASS (2 bytes)
-            buffer[offset++] = (question.qclass >> 8) & 0xFF;
-            buffer[offset++] = question.qclass & 0xFF;
+        for (const auto &question : questions)
+        {
+            offset = question.serialize(buffer, offset);
         }
-        
+        for (const auto &answer : answers)
+        {
+            offset = answer.serialize(buffer, offset);
+        }
+
         return buffer;
-    }
-    void parseQuestions(const char *buffer, int &offset)
-    {        
-        for (int i = 0; i < QDCOUNT; i++) {
-            Question q;
-            
-            // Parse domain name
-            std::string name;
-            int startOffset = offset;
-            
-            while (true) {
-                uint8_t labelLength = (uint8_t)buffer[offset++];
-                
-                // If length is 0, we've reached the end of the domain name
-                if (labelLength == 0)
-                    break;
-                    
-                // Add dot between labels (except for the first one)
-                if (!name.empty())
-                    name += ".";
-                    
-                // Copy the characters for this label
-                for (int j = 0; j < labelLength; j++) {
-                    name += buffer[offset++];
-                }
-            }
-            
-            q.name = name;
-            
-            // Parse QTYPE (2 bytes)
-            q.qtype = ((uint8_t)buffer[offset] << 8) | (uint8_t)buffer[offset + 1];
-            offset += 2;
-            
-            // Parse QCLASS (2 bytes)
-            q.qclass = ((uint8_t)buffer[offset] << 8) | (uint8_t)buffer[offset + 1];
-            offset += 2;
-            
-            this->questions.push_back(q);
-            DEBUG("Parsed question: " << q.name << " (type=" << q.qtype << ", class=" << q.qclass << ")");
-        }
     }
 
     static DNSMessage deserialize(const char *buffer)
@@ -206,14 +359,22 @@ public:
         msg.ARCOUNT = ((uint8_t)buffer[10] << 8) | (uint8_t)buffer[11];
 
         int offset = 12;
-        msg.parseQuestions(buffer, offset);
+        for (int i = 0; i < msg.QDCOUNT; i++)
+        {
+            msg.questions.push_back(Question::deserialize(buffer, offset));
+        }
+
+        for (const auto& question : msg.questions) {
+            msg.answers.push_back(dns_store.getRecord(question.name));
+        }
+        msg.ANCOUNT = msg.answers.size();
 
         return msg;
     }
 
     void debug_print()
     {
-        DEBUG("DNS Message of size " << responseSize() << ":");
+        DEBUG("DNS Message of size " << this->size() << ":");
         DEBUG("  ID: " << id);
         DEBUG("  QR: " << (QR ? "1" : "0"));
         DEBUG("  OPCODE: " << (int)OPCODE);
@@ -230,13 +391,21 @@ public:
         DEBUG("  NSCOUNT: " << NSCOUNT);
         DEBUG("  ARCOUNT: " << ARCOUNT);
         DEBUG("  Questions: ");
-        for (const auto &question : questions) {
+        for (const auto &question : questions)
+        {
             DEBUG("    Name: " << question.name);
             DEBUG("    Type: " << question.qtype);
             DEBUG("    Class: " << question.qclass);
         }
+        DEBUG("  Answers: ");
+        for (const auto &answer : answers)
+        {
+            DEBUG("    Name: " << answer.name);
+            DEBUG("    IP: " << answer.rdata);
+        }
     }
 };
+
 
 int main()
 {
@@ -283,8 +452,11 @@ int main()
     }
 
     int bytesRead;
-    char buffer[512];
+    char buffer[1024];
     socklen_t clientAddrLen = sizeof(clientAddress);
+
+    // Create DNS records
+    init_dns_store();
 
     while (true)
     {
@@ -307,7 +479,7 @@ int main()
 
         char *response = incomingMsg.serialize();
 
-        if (sendto(udpSocket, response, incomingMsg.responseSize(), 0, reinterpret_cast<struct sockaddr *>(&clientAddress), sizeof(clientAddress)) == -1)
+        if (sendto(udpSocket, response, incomingMsg.size(), 0, reinterpret_cast<struct sockaddr *>(&clientAddress), sizeof(clientAddress)) == -1)
         {
             perror("Failed to send response");
         }
