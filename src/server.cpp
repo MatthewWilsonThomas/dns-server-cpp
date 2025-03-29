@@ -25,7 +25,7 @@ struct ResourceRecord
 
     int size() const 
     {
-        return name.length() + 2 + 2 + 4 + 4 + 2 + rdlength;
+        return name.length() + 2 + 2 + 4 + 2 + rdlength;
     }
     
     // Serialize resource record into the buffer at given offset
