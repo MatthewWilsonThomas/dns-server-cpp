@@ -351,7 +351,7 @@ public:
         msg.Z = (buffer[3] >> 4) & 0x07;
         msg.AD = (buffer[3] >> 3) & 0x01;
         msg.CD = (buffer[3] >> 2) & 0x01;
-        msg.RCODE = buffer[3] & 0x0F;
+        msg.RCODE = 0 ? 0 : 4;
 
         // Bytes 4-5: QDCOUNT (16 bits)
         msg.QDCOUNT = ((uint8_t)buffer[4] << 8) | (uint8_t)buffer[5];
@@ -477,8 +477,6 @@ int main()
         // Parse incoming DNS message
         DNSMessage incomingMsg = DNSMessage::deserialize(buffer);
         incomingMsg.debug_print();
-
-        incomingMsg.id = 1234;
         incomingMsg.QR = true;
 
         char *response = incomingMsg.serialize();
