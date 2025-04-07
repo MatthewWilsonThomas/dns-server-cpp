@@ -10,7 +10,7 @@
 #include <sstream>
 #include <arpa/inet.h>
 
-#define DEBUG_OUTPUT 1
+#define DEBUG_OUTPUT 0
 
 #define DEBUG(x)      \
     if (DEBUG_OUTPUT) \
@@ -119,6 +119,92 @@ struct ResourceRecord
         }
 
         return offset;
+    }
+
+    // Deserialize a resource record from a buffer, offset is updated in place
+    static ResourceRecord deserialize(const char *buffer, int &offset, int messageStart = 0)
+    {
+        ResourceRecord record;
+        
+        // Parse domain name
+        std::string name;
+        int labelOffset = offset;
+        bool compressedNameUsed = false;
+
+        while (true)
+        {
+            uint8_t labelLength = (uint8_t)buffer[labelOffset++];
+            
+            // Check if this is a pointer (compression)
+            if ((labelLength & 0xC0) == 0xC0)
+            {
+                // It's a pointer - the offset is the lower 14 bits of the 2-byte pointer
+                if (!compressedNameUsed)
+                {
+                    // Only advance offset once - the first time we encounter a pointer
+                    offset = labelOffset + 1; // Skip past the 2-byte pointer
+                    compressedNameUsed = true;
+                }
+
+                // Calculate the pointer offset (lower 14 bits)
+                uint16_t pointerOffset = ((labelLength & 0x3F) << 8) | (uint8_t)buffer[labelOffset];
+                labelOffset = pointerOffset + messageStart;
+                continue; // Go to the new position and continue parsing
+            }
+            
+            // If length is 0, we've reached the end of the domain name
+            if (labelLength == 0)
+                break;
+
+            // Add dot between labels (except for the first one)
+            if (!name.empty())
+                name += ".";
+
+            // Copy the characters for this label
+            for (int j = 0; j < labelLength; j++)
+            {
+                name += buffer[labelOffset++];
+            }
+        }
+        
+        if (!compressedNameUsed)
+        {
+            offset = labelOffset;
+        }
+
+        record.name = name;
+        
+        // Parse TYPE (2 bytes)
+        record.rtype = ((uint8_t)buffer[offset] << 8) | (uint8_t)buffer[offset + 1];
+        offset += 2;
+        
+        // Parse CLASS (2 bytes)
+        record.rclass = ((uint8_t)buffer[offset] << 8) | (uint8_t)buffer[offset + 1];
+        offset += 2;
+        
+        // Parse TTL (4 bytes)
+        record.ttl = ((uint8_t)buffer[offset] << 24) | ((uint8_t)buffer[offset + 1] << 16) |
+                     ((uint8_t)buffer[offset + 2] << 8) | (uint8_t)buffer[offset + 3];
+        offset += 4;
+        
+        // Parse RDLENGTH (2 bytes)
+        record.rdlength = ((uint8_t)buffer[offset] << 8) | (uint8_t)buffer[offset + 1];
+        offset += 2;
+        
+        // Parse RDATA based on record type
+        if (record.rtype == 1 && record.rdlength == 4) // A record with IPv4 address
+        {
+            std::stringstream ss;
+            ss << (int)(uint8_t)buffer[offset] << "."
+               << (int)(uint8_t)buffer[offset + 1] << "."
+               << (int)(uint8_t)buffer[offset + 2] << "."
+               << (int)(uint8_t)buffer[offset + 3];
+            record.rdata = ss.str();
+        }
+        
+        offset += record.rdlength; // Skip over RDATA
+        
+        return record;
     }
 };
 
@@ -322,42 +408,11 @@ public:
         char *buffer = new char[bufferSize];
         memset(buffer, 0, bufferSize);
 
-        // Bytes 0-1: ID (16 bits)
-        buffer[0] = (id >> 8) & 0xFF;
-        buffer[1] = id & 0xFF;
-
-        // Byte 2: QR(1) | OPCODE(4) | AA(1) | TC(1) | RD(1)
-        buffer[2] = (QR << 7) | ((OPCODE & 0x0F) << 3) | (AA << 2) | (TC << 1) | RD;
-
-        // Byte 3: RA(1) | Z(3) | RCODE(4)
-        buffer[3] = (RA << 7) | ((Z & 0x07) << 4) | (AD << 3) | (CD << 2) | (RCODE & 0x0F);
-
-        // Bytes 4-5: QDCOUNT (16 bits)
-        buffer[4] = (QDCOUNT >> 8) & 0xFF;
-        buffer[5] = QDCOUNT & 0xFF;
-
-        // Bytes 6-7: ANCOUNT (16 bits)
-        buffer[6] = (ANCOUNT >> 8) & 0xFF;
-        buffer[7] = ANCOUNT & 0xFF;
-
-        // Bytes 8-9: NSCOUNT (16 bits)
-        buffer[8] = (NSCOUNT >> 8) & 0xFF;
-        buffer[9] = NSCOUNT & 0xFF;
-
-        // Bytes 10-11: ARCOUNT (16 bits)
-        buffer[10] = (ARCOUNT >> 8) & 0xFF;
-        buffer[11] = ARCOUNT & 0xFF;
-
-        // Write questions
-        int offset = 12;
-        for (const auto &question : questions)
-        {
-            offset = question.serialize(buffer, offset);
-        }
-        for (const auto &answer : answers)
-        {
-            offset = answer.serialize(buffer, offset);
-        }
+        // Write header
+        int offset = 0;
+        offset = this->serializeHeader(buffer, offset);
+        offset = this->serializeQuestions(buffer, offset);
+        offset = this->serializeAnswers(buffer, offset);
 
         return buffer;
     }
@@ -413,15 +468,61 @@ public:
         }
     }
 
-    std::vector<Question> serializeQuestions()
+    int serializeHeader(char *buffer, int offset)
     {
-        std::vector<Question> serializedQuestions;
+        
+        // Bytes 0-1: ID (16 bits)
+        buffer[offset++] = (id >> 8) & 0xFF;
+        buffer[offset++] = id & 0xFF;
+
+        // Byte 2: QR(1) | OPCODE(4) | AA(1) | TC(1) | RD(1)
+        buffer[offset++] = (QR << 7) | ((OPCODE & 0x0F) << 3) | (AA << 2) | (TC << 1) | RD;
+
+        // Byte 3: RA(1) | Z(3) | RCODE(4)
+        buffer[offset++] = (RA << 7) | ((Z & 0x07) << 4) | (AD << 3) | (CD << 2) | (RCODE & 0x0F);
+
+        // Bytes 4-5: QDCOUNT (16 bits)
+        buffer[offset++] = (QDCOUNT >> 8) & 0xFF;
+        buffer[offset++] = QDCOUNT & 0xFF;
+
+        // Bytes 6-7: ANCOUNT (16 bits)
+        buffer[offset++] = (ANCOUNT >> 8) & 0xFF;
+        buffer[offset++] = ANCOUNT & 0xFF;
+
+        // Bytes 8-9: NSCOUNT (16 bits)
+        buffer[offset++] = (NSCOUNT >> 8) & 0xFF;
+        buffer[offset++] = NSCOUNT & 0xFF;
+
+        // Bytes 10-11: ARCOUNT (16 bits)
+        buffer[offset++] = (ARCOUNT >> 8) & 0xFF;
+        buffer[offset++] = ARCOUNT & 0xFF;
+
+        return offset;
+    }
+
+    int headerSize()
+    {
+        return 12;
+    }
+
+    int serializeQuestions(char *buffer, int offset)
+    {
         for (const auto &question : questions)
         {
-            serializedQuestions.push_back(question);
+            offset = question.serialize(buffer, offset);
         }
-        return serializedQuestions;
+        return offset;
     }
+
+    int serializeAnswers(char *buffer, int offset)
+    {
+        for (const auto &answer : answers)
+        {
+            offset = answer.serialize(buffer, offset);
+        }
+        return offset;
+    }
+
     void debug_print()
     {
         DEBUG("DNS Message of size " << this->size() << ":");
@@ -506,7 +607,7 @@ int main(int argc, char *argv[])
 
     std::cout << "Using DNS resolver: " << resolverIp << ":" << resolverPort << std::endl;
 
-    // Uncomment this block to pass the first stage
+    // Client socket setup
     int udpSocket;
     struct sockaddr_in clientAddress;
 
@@ -545,8 +646,10 @@ int main(int argc, char *argv[])
         std::cerr << "Forward socket creation failed: " << strerror(errno) << std::endl;
         return 1;
     }
+    
     // Configure the forwarding DNS server address
     struct sockaddr_in dnsServerAddr;
+    memset(&dnsServerAddr, 0, sizeof(dnsServerAddr));
     dnsServerAddr.sin_family = AF_INET;
     dnsServerAddr.sin_port = htons(resolverPort);
     if (inet_pton(AF_INET, resolverIp.c_str(), &dnsServerAddr.sin_addr) <= 0)
@@ -561,38 +664,130 @@ int main(int argc, char *argv[])
 
     while (true)
     {
-        // Receive data
+        // Receive data from client
         bytesRead = recvfrom(udpSocket, buffer, sizeof(buffer), 0,
                             reinterpret_cast<struct sockaddr *>(&clientAddress), &clientAddrLen);
         if (bytesRead == -1)
         {
-            perror("Error receiving data");
+            perror("Error receiving data from client");
             break;
         }
 
-        DEBUG("Received " << bytesRead << " bytes containing:  " << buffer);
-
         // Parse incoming DNS message
         DNSMessage incomingMsg = DNSMessage::deserialize(buffer);
+        std::cout << "Incoming message: " << incomingMsg.id << std::endl;
         incomingMsg.debug_print();
-        incomingMsg.QR = true;
-
-        incomingMsg.resolve();
-
-        char *response = incomingMsg.serialize();
-
-        if (sendto(forwardSocket, response, incomingMsg.size(), 0,
-                    reinterpret_cast<struct sockaddr *>(&dnsServerAddr), sizeof(dnsServerAddr)) == -1)
+        
+        // Set response flags
+        incomingMsg.QR = true; // This is a response
+        incomingMsg.RA = true; // Recursion available
+        incomingMsg.answers.clear(); // Clear any existing answers
+        incomingMsg.ANCOUNT = 0; // Will update as we add answers
+        
+        // Process each question separately
+        for (const auto &question : incomingMsg.questions)
         {
-            perror("Failed to send response");
+            // Create a new message for this specific question
+            DNSMessage outgoingMsg;
+            
+            // Copy header fields
+            outgoingMsg.id = incomingMsg.id;
+            outgoingMsg.QR = false; // This is a query
+            outgoingMsg.OPCODE = incomingMsg.OPCODE;
+            outgoingMsg.AA = false;
+            outgoingMsg.TC = false;
+            outgoingMsg.RD = incomingMsg.RD;
+            outgoingMsg.RA = false;
+            outgoingMsg.Z = 0;
+            outgoingMsg.AD = false;
+            outgoingMsg.CD = false;
+            outgoingMsg.RCODE = 0;
+            
+            // Set counts
+            outgoingMsg.QDCOUNT = 1; // One question per query
+            outgoingMsg.ANCOUNT = 0;
+            outgoingMsg.NSCOUNT = 0;
+            outgoingMsg.ARCOUNT = 0;
+            
+            // Add the individual question
+            outgoingMsg.questions.push_back(question);
+
+            std::cout << "Forwarding request for: " << question.name << std::endl;
+            outgoingMsg.debug_print();
+            
+            // Serialize the query and send to upstream resolver
+            char* queryBuffer = outgoingMsg.serialize();
+            if (sendto(forwardSocket, queryBuffer, outgoingMsg.size(), 0,
+                       reinterpret_cast<struct sockaddr *>(&dnsServerAddr), sizeof(dnsServerAddr)) == -1)
+            {
+                perror("Failed to send query to resolver");
+                delete[] queryBuffer;
+                continue;
+            }
+            delete[] queryBuffer;
+            
+            // Create buffer for response
+            char respBuffer[1024];
+            memset(respBuffer, 0, sizeof(respBuffer));
+            struct sockaddr_in resolverResponseAddr;
+            socklen_t resolverResponseAddrLen = sizeof(resolverResponseAddr);
+            
+            // Receive response from upstream DNS server
+            int respBytesRead = recvfrom(forwardSocket, respBuffer, sizeof(respBuffer), 0,
+                                        reinterpret_cast<struct sockaddr *>(&resolverResponseAddr), 
+                                        &resolverResponseAddrLen);
+                                
+            if (respBytesRead == -1)
+            {
+                perror("Error receiving data from resolver");
+                continue;
+            }
+
+            // Parse the DNS response header
+            uint16_t respId = ((uint8_t)respBuffer[0] << 8) | (uint8_t)respBuffer[1];
+            uint16_t respFlags = ((uint8_t)respBuffer[2] << 8) | (uint8_t)respBuffer[3];
+            uint16_t respQdcount = ((uint8_t)respBuffer[4] << 8) | (uint8_t)respBuffer[5];
+            uint16_t respAncount = ((uint8_t)respBuffer[6] << 8) | (uint8_t)respBuffer[7];
+            
+            std::cout << "Received response from resolver with " << respAncount << " answers" << std::endl;
+            
+            // Skip past the header and question section
+            int offset = 12; // Start after the header
+            
+            // Skip all questions in the response
+            for (int i = 0; i < respQdcount; i++) {
+                Question::deserialize(respBuffer, offset);
+            }
+            
+            // Now parse and add all answers from the response
+            for (int i = 0; i < respAncount; i++) {
+                // Use the new deserialize method from ResourceRecord
+                ResourceRecord answer = ResourceRecord::deserialize(respBuffer, offset);
+                
+                // Add this answer to our response
+                incomingMsg.answers.push_back(answer);
+                incomingMsg.ANCOUNT++;
+            }
         }
-
-
-        // Free allocated memory
-        delete[] response;
+        
+        // Serialize and send the final response
+        std::cout << "Sending final response with " << incomingMsg.answers.size() << " answers" << std::endl;
+        incomingMsg.debug_print();
+        
+        char* responseBuffer = incomingMsg.serialize();
+        int responseSize = incomingMsg.size();
+        
+        if (sendto(udpSocket, responseBuffer, responseSize, 0,
+                  reinterpret_cast<struct sockaddr *>(&clientAddress), 
+                  clientAddrLen) == -1) {
+            perror("Failed to send response to client");
+        }
+        
+        delete[] responseBuffer;
     }
 
     close(udpSocket);
+    close(forwardSocket);
 
     return 0;
 }
