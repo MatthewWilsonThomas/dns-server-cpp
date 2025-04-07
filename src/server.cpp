@@ -577,6 +577,8 @@ int main(int argc, char *argv[])
         incomingMsg.debug_print();
         incomingMsg.QR = true;
 
+        incomingMsg.resolve();
+
         char *response = incomingMsg.serialize();
 
         if (sendto(forwardSocket, response, incomingMsg.size(), 0,
@@ -584,6 +586,7 @@ int main(int argc, char *argv[])
         {
             perror("Failed to send response");
         }
+
 
         // Free allocated memory
         delete[] response;
