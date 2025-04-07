@@ -6,9 +6,11 @@
 
 #include <vector>
 #include <string>
-#include <unordered_map> 
+#include <unordered_map>
+#include <sstream>
+#include <arpa/inet.h>
 
-#define DEBUG_OUTPUT 0
+#define DEBUG_OUTPUT 1
 
 #define DEBUG(x)      \
     if (DEBUG_OUTPUT) \
@@ -23,7 +25,7 @@ struct ResourceRecord
     uint16_t rdlength;
     std::string rdata;
 
-    int size() const 
+    int size() const
     {
         int nameSize = name.length() + 2; // +2 for label length bytes and null terminator
         for (char c : name)
@@ -34,9 +36,9 @@ struct ResourceRecord
         // 2 bytes for type, 2 bytes for class, 4 bytes for ttl, 2 bytes for rdlength
         return nameSize + 2 + 2 + 4 + 2 + rdlength;
     }
-    
+
     // Serialize resource record into the buffer at given offset
-    int serialize(char* buffer, int offset) const 
+    int serialize(char *buffer, int offset) const
     {
         // Write domain name in DNS format (length byte followed by characters)
         std::string name_copy = name;
@@ -94,7 +96,7 @@ struct ResourceRecord
 
         // Write RDATA
         // For A records (IPv4 addresses), convert string representation to binary
-       
+
         // Parse IP address string (e.g., "8.8.8.8") into 4 bytes
         int ipParts[4] = {0};
         int ipPartIndex = 0;
@@ -120,20 +122,25 @@ struct ResourceRecord
     }
 };
 
-class DNSStore {
+class DNSStore
+{
     std::unordered_map<std::string, ResourceRecord> records;
 
 public:
-    DNSStore() {
+    DNSStore()
+    {
         addRecord("codecrafters.io", ResourceRecord("codecrafters.io", 1, 1, 1, 4, "8.8.8.8"));
     }
 
-    void addRecord(const std::string &name, const ResourceRecord &record) {
+    void addRecord(const std::string &name, const ResourceRecord &record)
+    {
         records[name] = record;
     }
 
-    ResourceRecord getRecord(const std::string &name) {
-        if (records.find(name) == records.end()) {
+    ResourceRecord getRecord(const std::string &name)
+    {
+        if (records.find(name) == records.end())
+        {
             return ResourceRecord(name, 1, 1, 1, 4, "0.0.0.0");
         }
         return records[name];
@@ -210,18 +217,20 @@ struct Question
         {
             uint8_t labelLength = (uint8_t)buffer[labelOffset++];
             // Check if this is a pointer (compression)
-            if ((labelLength & 0xC0) == 0xC0) {
+            if ((labelLength & 0xC0) == 0xC0)
+            {
                 // It's a pointer - the offset is the lower 14 bits of the 2-byte pointer
-                if (!compressedNameUsed) {
+                if (!compressedNameUsed)
+                {
                     // Only advance offset once - the first time we encounter a pointer
                     offset = labelOffset + 1; // Skip past the 2-byte pointer
                     compressedNameUsed = true;
                 }
-                
+
                 // Calculate the pointer offset (lower 14 bits)
                 uint16_t pointerOffset = ((labelLength & 0x3F) << 8) | (uint8_t)buffer[labelOffset];
                 labelOffset = pointerOffset + messageStart;
-                continue;  // Go to the new position and continue parsing
+                continue; // Go to the new position and continue parsing
             }
             // If length is 0, we've reached the end of the domain name
             if (labelLength == 0)
@@ -237,7 +246,8 @@ struct Question
                 name += buffer[labelOffset++];
             }
         }
-        if (!compressedNameUsed) {
+        if (!compressedNameUsed)
+        {
             offset = labelOffset;
         }
 
@@ -267,7 +277,6 @@ struct Question
         return nameSize + 4;
     }
 };
-
 
 class DNSMessage
 {
@@ -393,14 +402,26 @@ public:
             msg.questions.push_back(Question::deserialize(buffer, offset, messageStart));
         }
 
-        for (const auto& question : msg.questions) {
-            msg.answers.push_back(dns_store.getRecord(question.name));
-        }
-        msg.ANCOUNT = msg.answers.size();
-
         return msg;
     }
 
+    void resolve()
+    {
+        for (const auto &question : questions)
+        {
+            answers.push_back(dns_store.getRecord(question.name));
+        }
+    }
+
+    std::vector<Question> serializeQuestions()
+    {
+        std::vector<Question> serializedQuestions;
+        for (const auto &question : questions)
+        {
+            serializedQuestions.push_back(question);
+        }
+        return serializedQuestions;
+    }
     void debug_print()
     {
         DEBUG("DNS Message of size " << this->size() << ":");
@@ -435,8 +456,7 @@ public:
     }
 };
 
-
-int main()
+int main(int argc, char *argv[])
 {
     // Flush after every std::cout / std::cerr
     std::cout << std::unitbuf;
@@ -447,6 +467,44 @@ int main()
 
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     std::cout << "Logs from your program will appear here!" << std::endl;
+
+    // Parse command line arguments for resolver address
+    std::string resolverIp = "8.8.8.8"; // Default to Google DNS
+    int resolverPort = 53;              // Default DNS port
+
+    for (int i = 1; i < argc; i++)
+    {
+        std::string arg = argv[i];
+        if (arg == "--resolver" && i + 1 < argc)
+        {
+            std::string resolver = argv[i + 1];
+            size_t colonPos = resolver.find(':');
+
+            if (colonPos != std::string::npos)
+            {
+                resolverIp = resolver.substr(0, colonPos);
+                std::string portStr = resolver.substr(colonPos + 1);
+                try
+                {
+                    resolverPort = std::stoi(portStr);
+                }
+                catch (const std::exception &e)
+                {
+                    std::cerr << "Invalid port number: " << portStr << std::endl;
+                    return 1;
+                }
+            }
+            else
+            {
+                std::cerr << "Invalid resolver format. Expected <ip>:<port>" << std::endl;
+                return 1;
+            }
+
+            i++; // Skip the next argument since we've processed it
+        }
+    }
+
+    std::cout << "Using DNS resolver: " << resolverIp << ":" << resolverPort << std::endl;
 
     // Uncomment this block to pass the first stage
     int udpSocket;
@@ -480,6 +538,23 @@ int main()
         return 1;
     }
 
+    // Create a socket for forwarding queries to upstream DNS server
+    int forwardSocket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (forwardSocket == -1)
+    {
+        std::cerr << "Forward socket creation failed: " << strerror(errno) << std::endl;
+        return 1;
+    }
+    // Configure the forwarding DNS server address
+    struct sockaddr_in dnsServerAddr;
+    dnsServerAddr.sin_family = AF_INET;
+    dnsServerAddr.sin_port = htons(resolverPort);
+    if (inet_pton(AF_INET, resolverIp.c_str(), &dnsServerAddr.sin_addr) <= 0)
+    {
+        std::cerr << "Invalid resolver IP address: " << resolverIp << std::endl;
+        return 1;
+    }
+
     int bytesRead;
     char buffer[1024];
     socklen_t clientAddrLen = sizeof(clientAddress);
@@ -487,7 +562,8 @@ int main()
     while (true)
     {
         // Receive data
-        bytesRead = recvfrom(udpSocket, buffer, sizeof(buffer), 0, reinterpret_cast<struct sockaddr *>(&clientAddress), &clientAddrLen);
+        bytesRead = recvfrom(udpSocket, buffer, sizeof(buffer), 0,
+                            reinterpret_cast<struct sockaddr *>(&clientAddress), &clientAddrLen);
         if (bytesRead == -1)
         {
             perror("Error receiving data");
@@ -503,7 +579,8 @@ int main()
 
         char *response = incomingMsg.serialize();
 
-        if (sendto(udpSocket, response, incomingMsg.size(), 0, reinterpret_cast<struct sockaddr *>(&clientAddress), sizeof(clientAddress)) == -1)
+        if (sendto(forwardSocket, response, incomingMsg.size(), 0,
+                    reinterpret_cast<struct sockaddr *>(&dnsServerAddr), sizeof(dnsServerAddr)) == -1)
         {
             perror("Failed to send response");
         }
